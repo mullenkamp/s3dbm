@@ -5,15 +5,16 @@ Created on Thu Jan  5 11:04:13 2023
 
 @author: mike
 """
-import os
+# import os
 import io
 from pydantic import BaseModel, HttpUrl
 import copy
 import boto3
 import botocore
-from time import sleep
+# from time import sleep
 import smart_open
 import zstandard as zstd
+from collections.abc import Mapping, MutableMapping
 
 ############################################
 ### Parameters
@@ -180,7 +181,7 @@ def url_to_stream(url: HttpUrl, buffer_size: int=524288, read_timeout: int=120):
     return file_obj
 
 
-def get_object_s3(obj_key: str, bucket: str, s3: botocore.client.BaseClient = None, public_url: HttpUrl=None, buffer_size: int=524288, read_timeout: int=120, provider: str=None, compression=True):
+def get_object_s3(obj_key: str, bucket: str, s3: botocore.client.BaseClient = None, public_url: HttpUrl=None, buffer_size: int=524288, read_timeout: int=120, provider: str=None):
     """
     General function to get an object from an S3 bucket. One of s3, connection_config, or public_url must be used. This function will return a file object of the object in the S3 (or url) location. This file object does not contain any data until data is read from it, which ensures large files are not completely read into memory.
 
@@ -228,9 +229,30 @@ def get_object_s3(obj_key: str, bucket: str, s3: botocore.client.BaseClient = No
     else:
         raise TypeError('One of client or public_url needs to be correctly defined.')
 
-    if compression:
-        if url.endswith('.zstd') or url.endswith('.zst'):
-            file_obj = zstd_stream_reader(file_obj, buffer_size)
+    return file_obj
+
+
+def get_object_final(obj_key: str, bucket: str, s3: botocore.client.BaseClient = None, public_url: HttpUrl=None, buffer_size: int=524288, read_timeout: int=120, provider: str=None, compression: bool=True, cache: MutableMapping=None):
+    """
+
+    """
+    if cache is not None:
+        if '_chunk_size' in cache:
+            buffer_size = cache._chunk_size
+        try:
+            file_obj = cache[obj_key]
+        except:
+            file_obj = get_object_s3(obj_key, bucket, s3, public_url, buffer_size, read_timeout, provider)
+            if file_obj is not None:
+                cache[obj_key] = file_obj
+                file_obj = cache[obj_key]
+    else:
+        file_obj = get_object_s3(obj_key, bucket, s3, public_url, buffer_size, read_timeout, provider)
+
+    if file_obj is not None:
+        if compression:
+            if obj_key.endswith('.zstd') or obj_key.endswith('.zst'):
+                file_obj = zstd_stream_reader(file_obj, buffer_size)
 
     return file_obj
 

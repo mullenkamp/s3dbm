@@ -7,10 +7,10 @@ import os
 here = os.path.abspath(os.path.dirname(__file__))
 
 # General parameters
-name = 'booklet'
-main_package = 'booklet'
-version = '0.0.18'
-descrip = 'A python key-value file database'
+name = 's3dbm'
+main_package = 's3dbm'
+version = '0.0.2'
+descrip = 'A python dbm-style interface to S3'
 
 # The below code is for readthedocs. To have sphinx/readthedocs interact with
 # the contained package, readthedocs needs to build the package. But the dependencies
@@ -18,7 +18,7 @@ descrip = 'A python key-value file database'
 if os.environ.get('READTHEDOCS', False) == 'True':
     INSTALL_REQUIRES = []
 else:
-    INSTALL_REQUIRES = []
+    INSTALL_REQUIRES = ['boto3', 'pydantic', 'smart_open', 'zstandard']
 
 # Get the long description from the README file
 with open(os.path.join(here, 'README.rst'), encoding='utf-8') as f:
@@ -78,7 +78,7 @@ setup(
     #
     # This field corresponds to the "Home-Page" metadata field:
     # https://packaging.python.org/specifications/core-metadata/#home-page-optional
-    url='https://github.com/mullenkamp/booklet',  # Optional
+    url='https://github.com/mullenkamp/s3dbm',  # Optional
 
     # This should be your name or the name of the organization which owns the
     # project.
@@ -115,7 +115,7 @@ setup(
     # project page. What does your project relate to?
     #
     # Note that this is a string of words separated by whitespace, not a list.
-    keywords='shelve dbm',  # Optional
+    keywords='shelve dbm s3',  # Optional
 
     # You can just specify package directories manually here if your project is
     # simple. Or you can use find_packages().

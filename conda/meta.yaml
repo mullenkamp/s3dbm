@@ -1,5 +1,5 @@
-{% set name = "booklet" %}
-{% set version = "0.0.18" %}
+{% set name = "s3dbm" %}
+{% set version = "0.0.2" %}
 # {% set sha256 = "72a156e328247c91cb7f5440ffa98069c0090892f8d9d07fd57e36c0611a0403" %}
 
 # sha256 is the prefered checksum -- you can get it for a file with:
@@ -36,16 +36,20 @@ requirements:
     - setuptools
   run:
     - python >=3.8
+    - boto3
+    - pydantic
+    - smart_open
+    - zstandard
 
 test:
   imports:
-    - booklet
+    - s3dbm
 
 about:
-  home: https://github.com/mullenkamp/booklet
+  home: https://github.com/mullenkamp/s3dbm
   license: Apache License 2.0
   license_family: APACHE
-  summary: A python key-value file database
-  description: A python key-value file database
-  doc_url: https://github.com/mullenkamp/booklet
+  summary: A python dbm-style interface to S3
+  description: A python dbm-style interface to S3
+  doc_url: https://github.com/mullenkamp/s3dbm
   dev_url: ''

@@ -1,6 +1,4 @@
-from booklet.main import open, Booklet
-from . import serializers
+from s3dbm.main import open, S3dbm
+from s3dbm.utils import s3_client
 
-available_serializers = list(serializers.serial_dict.keys())
-
-__all__ = ["open", "Booklet", "available_serializers"]
+__all__ = ["open", "S3dbm", "s3_client"]
