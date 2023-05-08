@@ -134,8 +134,11 @@ def zstd_stream_reader(stream, buffer_size: int=524288):
     """
 
     """
+    if hasattr(stream, '_buffer_size'):
+        buffer_size = stream._buffer_size
     dctx = zstd.ZstdDecompressor()
     reader = dctx.stream_reader(stream, read_size=buffer_size)
+    reader._buffer_size = buffer_size
 
     return reader
 
@@ -144,8 +147,11 @@ def zstd_stream_writer(stream, buffer_size: int=524288):
     """
 
     """
+    if hasattr(stream, '_buffer_size'):
+        buffer_size = stream._buffer_size
     dctx = zstd.ZstdCompressor(1)
     writer = dctx.stream_writer(stream, write_size=buffer_size)
+    writer._buffer_size = buffer_size
 
     return writer
 
@@ -175,6 +181,7 @@ def url_to_stream(url: HttpUrl, buffer_size: int=524288, read_timeout: int=120):
     ## Get the object
     try:
         file_obj = smart_open.open(url, 'rb', transport_params=transport_params, compression='disable')
+        file_obj._buffer_size = buffer_size
     except Exception as err:
         file_obj = None
 
@@ -221,6 +228,7 @@ def get_object_s3(obj_key: str, bucket: str, s3: botocore.client.BaseClient = No
 
         try:
             file_obj = smart_open.open(s3_url, 'rb', transport_params=transport_params, compression='disable')
+            file_obj._buffer_size = buffer_size
         except Exception as err:
             # print('smart_open could not open url with the following error:')
             # print(err)
@@ -237,8 +245,8 @@ def get_object_final(obj_key: str, bucket: str, s3: botocore.client.BaseClient =
 
     """
     if cache is not None:
-        if '_chunk_size' in cache:
-            buffer_size = cache._chunk_size
+        if hasattr(cache, '_buffer_size'):
+            buffer_size = cache._buffer_size
         try:
             file_obj = cache[obj_key]
         except:
@@ -278,9 +286,12 @@ def put_object_s3(s3: botocore.client.BaseClient, bucket: str, obj_key: str, fil
     -------
     None
     """
+    if hasattr(file_obj, '_buffer_size'):
+        buffer_size = file_obj._buffer_size
+
     s3_url = s3_url_base.format(bucket=bucket, key=obj_key)
 
-    transport_params = {'client': s3}
+    transport_params = {'client': s3, 'buffer_size': buffer_size}
 
     obj_size = determine_file_obj_size(file_obj)
 
