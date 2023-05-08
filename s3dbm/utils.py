@@ -138,7 +138,7 @@ def zstd_stream_reader(stream, buffer_size: int=524288):
         buffer_size = stream._buffer_size
     dctx = zstd.ZstdDecompressor()
     reader = dctx.stream_reader(stream, read_size=buffer_size)
-    reader._buffer_size = buffer_size
+    # reader._buffer_size = buffer_size
 
     return reader
 
