@@ -19,7 +19,7 @@ from . import utils
 
 
 
-class S3dbm(MutableMapping):
+class S3DBM(MutableMapping):
     """
 
     """
@@ -324,4 +324,4 @@ def open(
 
     """
 
-    return S3dbm(bucket, client, connection_config, public_url, flag, buffer_size, retries, read_timeout, provider, threads, compression, cache)
+    return S3DBM(bucket, client, connection_config, public_url, flag, buffer_size, retries, read_timeout, provider, threads, compression, cache)
