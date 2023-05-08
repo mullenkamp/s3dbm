@@ -130,7 +130,7 @@ def s3_client(connection_config: dict, max_pool_connections: int = 30, max_attem
     return s3
 
 
-def zstd_stream_reader(stream, buffer_size: int=524288):
+def zstd_stream_reader(stream, buffer_size: int=512000):
     """
 
     """
@@ -143,7 +143,7 @@ def zstd_stream_reader(stream, buffer_size: int=524288):
     return reader
 
 
-def zstd_stream_writer(stream, buffer_size: int=524288):
+def zstd_stream_writer(stream, buffer_size: int=512000):
     """
 
     """
@@ -156,7 +156,7 @@ def zstd_stream_writer(stream, buffer_size: int=524288):
     return writer
 
 
-def url_to_stream(url: HttpUrl, buffer_size: int=524288, read_timeout: int=120):
+def url_to_stream(url: HttpUrl, buffer_size: int=512000, read_timeout: int=120):
     """
     Function to create a file object from a file stored via http(s). This function will return a file object of the object in the url location. This file object does not contain any data until data is read from it, which ensures large files are not completely read into memory.
 
@@ -188,7 +188,7 @@ def url_to_stream(url: HttpUrl, buffer_size: int=524288, read_timeout: int=120):
     return file_obj
 
 
-def get_object_s3(obj_key: str, bucket: str, s3: botocore.client.BaseClient = None, public_url: HttpUrl=None, buffer_size: int=524288, read_timeout: int=120, provider: str=None):
+def get_object_s3(obj_key: str, bucket: str, s3: botocore.client.BaseClient = None, public_url: HttpUrl=None, buffer_size: int=512000, read_timeout: int=120, provider: str=None):
     """
     General function to get an object from an S3 bucket. One of s3, connection_config, or public_url must be used. This function will return a file object of the object in the S3 (or url) location. This file object does not contain any data until data is read from it, which ensures large files are not completely read into memory.
 
@@ -240,7 +240,7 @@ def get_object_s3(obj_key: str, bucket: str, s3: botocore.client.BaseClient = No
     return file_obj
 
 
-def get_object_final(obj_key: str, bucket: str, s3: botocore.client.BaseClient = None, public_url: HttpUrl=None, buffer_size: int=524288, read_timeout: int=120, provider: str=None, compression: bool=True, cache: MutableMapping=None):
+def get_object_final(obj_key: str, bucket: str, s3: botocore.client.BaseClient = None, public_url: HttpUrl=None, buffer_size: int=512000, read_timeout: int=120, provider: str=None, compression: bool=True, cache: MutableMapping=None):
     """
 
     """
@@ -265,7 +265,7 @@ def get_object_final(obj_key: str, bucket: str, s3: botocore.client.BaseClient =
     return file_obj
 
 
-def put_object_s3(s3: botocore.client.BaseClient, bucket: str, obj_key: str, file_obj: io.BufferedIOBase, buffer_size: int=524288, compression=True):
+def put_object_s3(s3: botocore.client.BaseClient, bucket: str, obj_key: str, file_obj: io.BufferedIOBase, buffer_size: int=512000, compression=True):
     """
     Function to upload data to an S3 bucket. This function will iteratively write the input file_obj in chunks ensuring that little memory is needed writing the object.
 

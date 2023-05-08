@@ -23,7 +23,7 @@ class S3DBM(MutableMapping):
     """
 
     """
-    def __init__(self, bucket: str, client: botocore.client.BaseClient=None, connection_config: utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=524288, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression=True, cache: MutableMapping=None):
+    def __init__(self, bucket: str, client: botocore.client.BaseClient=None, connection_config: utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression=True, cache: MutableMapping=None):
         """
 
         """
@@ -258,7 +258,7 @@ class S3DBM(MutableMapping):
 
 
 def open(
-    bucket: str, client: botocore.client.BaseClient=None, connection_config: utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=524288, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression: bool=True, cache: MutableMapping=None):
+    bucket: str, client: botocore.client.BaseClient=None, connection_config: utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression: bool=True, cache: MutableMapping=None):
     """
     Open an S3 dbm-style database. This allows the user to interact with an S3 bucket like a MutableMapping (python dict) object. Lots of options including read caching.
 
@@ -280,7 +280,7 @@ def open(
         Flag associated with how the file is opened according to the dbm style. See below for details.
 
     buffer_size : int
-        The buffer memory size used for reading and writing. Defaults to 524288.
+        The buffer memory size used for reading and writing. Defaults to 512000.
 
     retries : int
         The number of http retries for reads and writes. Defaults to 3.
@@ -323,5 +323,4 @@ def open(
     +---------+-------------------------------------------+
 
     """
-
     return S3DBM(bucket, client, connection_config, public_url, flag, buffer_size, retries, read_timeout, provider, threads, compression, cache)
