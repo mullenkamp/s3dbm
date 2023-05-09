@@ -21,7 +21,7 @@ from collections.abc import Mapping, MutableMapping
 
 public_key_patterns = {'b2': '{base_url}/{bucket}/{obj_key}',
                        'contabo': '{base_url}:{bucket}/{obj_key}',
-                       'r2': '{bucket}.{base_url}/{obj_key}',
+                       'r2': 'https://{bucket}.{base_url}/{obj_key}',
                        }
 
 s3_url_base = 's3://{bucket}/{key}'
@@ -77,6 +77,10 @@ def create_public_s3_url(base_url, bucket, obj_key, provider: str=None):
     """
     if provider is not None:
         if provider in public_key_patterns:
+            if provider == 'r2':
+                if '://' in base_url:
+                    base_url = base_url.split('://')[1]
+
             key = public_key_patterns[provider].format(base_url=base_url.rstrip('/'), bucket=bucket, obj_key=obj_key)
         else:
             raise ValueError(provider + ' not available')
@@ -317,7 +321,7 @@ def put_object_s3(s3: botocore.client.BaseClient, bucket: str, obj_key: str, fil
                 chunk = file_obj.read(buffer_size)
 
 
-def list_objects_s3(s3: botocore.client.BaseClient, bucket: str, prefix: str=None, start_after: str=None, delimiter: str=None, max_keys: int=None, continuation_token: str=''):
+def list_objects_s3(s3: botocore.client.BaseClient, bucket: str, prefix: str=None, start_after: str=None, delimiter: str=None, max_keys: int=None, continuation_token: str=None):
     """
     Wrapper S3 function around the list_objects_v2 base function with a Pandas DataFrame output.
 
@@ -343,7 +347,9 @@ def list_objects_s3(s3: botocore.client.BaseClient, bucket: str, prefix: str=Non
     DataFrame
     """
     params = build_params(bucket, start_after=start_after, prefix=prefix, delimiter=delimiter, max_keys=max_keys)
-    params['ContinuationToken'] = continuation_token
+
+    if continuation_token is not None:
+        params['ContinuationToken'] = continuation_token
 
     js = []
     while True:

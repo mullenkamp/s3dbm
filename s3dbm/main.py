@@ -61,17 +61,17 @@ class S3DBM(MutableMapping):
 
 
     def keys(self, prefix: str='', start_after: str='', delimiter: str=''):
-        continuation_token = ''
+        params = utils.build_params(self._bucket, start_after=start_after, prefix=prefix)
 
         while True:
-            js1 = self._client.list_objects_v2(Bucket=self._bucket, Prefix=prefix, StartAfter=start_after, Delimiter=delimiter, ContinuationToken=continuation_token)
+            js1 = self._client.list_objects_v2(**params)
 
             if 'Contents' in js1:
                 for k in js1['Contents']:
                     yield k['Key']
 
                 if 'NextContinuationToken' in js1:
-                    continuation_token = js1['NextContinuationToken']
+                    params['ContinuationToken'] = js1['NextContinuationToken']
                 else:
                     break
             else:
@@ -112,17 +112,18 @@ class S3DBM(MutableMapping):
         """
         There really should be a better way for this...
         """
-        continuation_token = ''
+        params = {'Bucket': self._bucket}
+
         count = 0
 
         while True:
-            js1 = self._client.list_objects_v2(Bucket=self._bucket, ContinuationToken=continuation_token)
+            js1 = self._client.list_objects_v2(**params)
 
             if 'Contents' in js1:
                 count += len(js1['Contents'])
 
                 if 'NextContinuationToken' in js1:
-                    continuation_token = js1['NextContinuationToken']
+                    params['ContinuationToken'] = js1['NextContinuationToken']
                 else:
                     break
             else:
