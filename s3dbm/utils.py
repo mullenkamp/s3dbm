@@ -21,7 +21,7 @@ from collections.abc import Mapping, MutableMapping
 
 public_key_patterns = {'b2': '{base_url}/{bucket}/{obj_key}',
                        'contabo': '{base_url}:{bucket}/{obj_key}',
-                       'r2': 'https://{bucket}.{base_url}/{obj_key}',
+                       'r2': '{base_url}/{obj_key}',
                        }
 
 s3_url_base = 's3://{bucket}/{key}'
@@ -75,19 +75,20 @@ def create_public_s3_url(base_url, bucket, obj_key, provider: str=None):
     """
     This should be updated as more S3 providers are added!
     """
+    base_url = base_url.rstrip('/')
+
     if provider is not None:
         if provider in public_key_patterns:
             if provider == 'r2':
-                if '://' in base_url:
-                    base_url = base_url.split('://')[1]
-
-            key = public_key_patterns[provider].format(base_url=base_url.rstrip('/'), bucket=bucket, obj_key=obj_key)
+                key = public_key_patterns[provider].format(base_url=base_url, obj_key=obj_key)
+            else:
+                key = public_key_patterns[provider].format(base_url=base_url, bucket=bucket, obj_key=obj_key)
         else:
             raise ValueError(provider + ' not available')
     elif 'contabo' in base_url:
-        key = public_key_patterns['contabo'].format(base_url=base_url.rstrip('/'), bucket=bucket, obj_key=obj_key)
+        key = public_key_patterns['contabo'].format(base_url=base_url, bucket=bucket, obj_key=obj_key)
     else:
-        key = public_key_patterns['b2'].format(base_url=base_url.rstrip('/'), bucket=bucket, obj_key=obj_key)
+        key = public_key_patterns['b2'].format(base_url=base_url, bucket=bucket, obj_key=obj_key)
 
     return key
 
