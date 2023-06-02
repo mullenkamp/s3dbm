@@ -27,12 +27,15 @@ class S3DBM(MutableMapping):
         """
 
         """
-        if client is not None:
-            pass
-        elif connection_config is not None:
+        # if client is not None:
+        #     pass
+        # elif connection_config is not None:
+        #     client = utils.s3_client(connection_config, threads, retries, read_timeout=read_timeout)
+        # else:
+        #     raise ValueError('Either client or connection_config must be assigned.')
+
+        if (connection_config is not None) and (client is None):
             client = utils.s3_client(connection_config, threads, retries, read_timeout=read_timeout)
-        else:
-            raise ValueError('Either client or connection_config must be assigned.')
 
         if flag == "r":  # Open existing database for reading only (default)
             write = False

@@ -257,15 +257,19 @@ def get_object_final(obj_key: str, bucket: str, s3: botocore.client.BaseClient =
         except:
             file_obj = get_object_s3(obj_key, bucket, s3, public_url, buffer_size, read_timeout, provider)
             if file_obj is not None:
+                if compression:
+                    if obj_key.endswith('.zstd') or obj_key.endswith('.zst'):
+                        file_obj = zstd_stream_reader(file_obj, buffer_size)
+
                 cache[obj_key] = file_obj
                 file_obj = cache[obj_key]
     else:
         file_obj = get_object_s3(obj_key, bucket, s3, public_url, buffer_size, read_timeout, provider)
 
-    if file_obj is not None:
-        if compression:
-            if obj_key.endswith('.zstd') or obj_key.endswith('.zst'):
-                file_obj = zstd_stream_reader(file_obj, buffer_size)
+        if file_obj is not None:
+            if compression:
+                if obj_key.endswith('.zstd') or obj_key.endswith('.zst'):
+                    file_obj = zstd_stream_reader(file_obj, buffer_size)
 
     return file_obj
 
