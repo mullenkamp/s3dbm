@@ -4,62 +4,92 @@
 
 """
 import io
+import os
 from collections.abc import Mapping, MutableMapping
 from typing import Any, Generic, Iterator, Union, List, Dict
+import pathlib
 import botocore
 # from botocore import exceptions as bc_exceptions
 from pydantic import HttpUrl
 import concurrent.futures
+import multiprocessing
+import threading
+import booklet
+import s3tethys
 
-# import utils
-from . import utils
+import utils # TODO
+# from . import utils
+
+# uuid_s3dbm = b'K=d:\xa89F(\xbc\xf5 \xd7$\xbd;\xf2'
+# version = 1
+# version_bytes = version.to_bytes(2, 'little', signed=False)
 
 #######################################################
 ### Classes
 
 
-
-class S3DBM(MutableMapping):
+class S3dbm(MutableMapping):
     """
 
     """
-    def __init__(self, bucket: str, client: botocore.client.BaseClient=None, connection_config: utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression=True, cache: MutableMapping=None):
+    def __init__(self, local_db_path: Union[str, pathlib.Path], remote_db_path: str, bucket: str, client: botocore.client.BaseClient=None, connection_config: utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, read_timeout: int=120, provider: str=None, threads: int=10, object_lock=False, **local_storage_kwargs):
         """
 
         """
-        # if client is not None:
-        #     pass
-        # elif connection_config is not None:
-        #     client = utils.s3_client(connection_config, threads, retries, read_timeout=read_timeout)
-        # else:
-        #     raise ValueError('Either client or connection_config must be assigned.')
+        # if local_storage not in utils.local_storage_options:
+        #     raise ValueError('local_storage must be one of {}.'.format(', '.join(utils.local_storage_options)))
 
-        if (connection_config is not None) and (client is None):
-            client = utils.s3_client(connection_config, threads, retries, read_timeout=read_timeout)
+        if (connection_config is None) and (client is None):
+            if flag != 'r':
+                raise ValueError("If flag != 'r', then either connection_config or client must be defined.")
+            elif public_url is None:
+                raise ValueError("If flag == 'r', then connection_config, client, or public_url must be defined.")
+
+        elif (connection_config is not None) and (client is None):
+            client = utils.s3_client(connection_config, threads, read_timeout=read_timeout)
 
         if flag == "r":  # Open existing database for reading only (default)
             write = False
+            overwrite = False
         elif flag == "w":  # Open existing database for reading and writing
             write = True
+            overwrite = False
         elif flag == "c":  # Open database for reading and writing, creating it if it doesn't exist
             write = True
+            overwrite = False
         elif flag == "n":  # Always create a new, empty database, open for reading and writing
             write = True
+            overwrite = True
         else:
             raise ValueError("Invalid flag")
 
+        ## Check local_storage_kwargs
+        local_file_path = pathlib.Path(local_db_path)
+
+        local_storage_kwargs = utils.check_local_storage_kwargs(local_storage, local_storage_kwargs, local_file_path)
+
+        ## Check if object already exists in S3
+        obj_key = remote_db_path.lstrip('/')
+        obj = utils.get_object_s3(obj_key, bucket, client, public_url, buffer_size, read_timeout, provider)
+
+        if (obj is None) and (flag in ('r', 'w')):
+            raise ValueError('remote db object not found.')
+        # elif flag == 'n':
+
+
+
         self._write = write
         self._buffer_size = buffer_size
-        self._retries = retries
         self._read_timeout = read_timeout
         self._client = client
         self._public_url = public_url
         self._bucket = bucket
+        # self._key_prefix = key_prefix
         self._provider = provider
-        self._compression = compression
         self._threads = threads
-        self._cache = cache
 
+        self._manager = multiprocessing.Manager()
+        self._lock = self._manager.Lock()
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
 
 
@@ -89,19 +119,19 @@ class S3DBM(MutableMapping):
             keys = self.keys(prefix, start_after, delimiter)
         futures = {}
         for key in keys:
-            f = self._executor.submit(utils.get_object_final, key, self._bucket, self._client, self._public_url, self._buffer_size, self._read_timeout, self._provider, self._compression, self._cache)
+            f = self._executor.submit(utils.get_object_final, key, self._bucket, self._client, self._public_url, self._buffer_size, self._read_timeout, self._provider, self._compression, self._cache, self._return_bytes)
             futures[f] = key
 
         for f in concurrent.futures.as_completed(futures):
             yield futures[f], f.result()
 
 
-    def values(self, keys: List[str]=None, prefix: str='', start_after: str='', delimiter: str='', threads=30):
+    def values(self, keys: List[str]=None, prefix: str='', start_after: str='', delimiter: str='', threads=10):
         if keys is None:
             keys = self.keys(prefix, start_after, delimiter)
         futures = {}
         for key in keys:
-            f = self._executor.submit(utils.get_object_final, key, self._bucket, self._client, self._public_url, self._buffer_size, self._read_timeout, self._provider, self._compression, self._cache)
+            f = self._executor.submit(utils.get_object_final, key, self._bucket, self._client, self._public_url, self._buffer_size, self._read_timeout, self._provider, self._compression, self._cache, self._return_bytes)
             futures[f] = key
 
         for f in concurrent.futures.as_completed(futures):
@@ -138,8 +168,9 @@ class S3DBM(MutableMapping):
     def __contains__(self, key):
         return key in self.keys()
 
+
     def get(self, key, default=None):
-        value = utils.get_object_final(key, self._bucket, self._client, self._public_url, self._buffer_size, self._read_timeout, self._provider, self._compression, self._cache)
+        value = utils.get_object_final(key, self._bucket, self._client, self._public_url, self._buffer_size, self._read_timeout, self._provider, self._compression, self._cache, self._return_bytes)
 
         if value is None:
             return default
@@ -152,12 +183,13 @@ class S3DBM(MutableMapping):
 
         """
         if self._write:
-            futures = {}
-            for key, value in key_value_dict.items():
-                if isinstance(value, bytes):
-                    value = io.BytesIO(value)
-                f = self._executor.submit(utils.put_object_s3, self._client, self._bucket, key, value, self._buffer_size, self._compression)
-                futures[f] = key
+            with self._lock:
+                futures = {}
+                for key, value in key_value_dict.items():
+                    if isinstance(value, bytes):
+                        value = io.BytesIO(value)
+                    f = self._executor.submit(utils.put_object_s3, self._client, self._bucket, key, value, self._buffer_size, self._compression)
+                    futures[f] = key
         else:
             raise ValueError('File is open for read only.')
 
@@ -167,30 +199,31 @@ class S3DBM(MutableMapping):
         Hard deletes files with delete markers.
         """
         if self._write:
-            deletes_list = []
-            files, dms = utils.list_object_versions_s3(self._client, self._bucket, delete_markers=True)
+            with self._lock:
+                deletes_list = []
+                files, dms = utils.list_object_versions_s3(self._client, self._bucket, delete_markers=True)
 
-            d_keys = {dm['Key']: dm['VersionId'] for dm in dms}
+                d_keys = {dm['Key']: dm['VersionId'] for dm in dms}
 
-            if d_keys:
-                for key, vid in d_keys.items():
-                    deletes_list.append({'Key': key, 'VersionId': vid})
+                if d_keys:
+                    for key, vid in d_keys.items():
+                        deletes_list.append({'Key': key, 'VersionId': vid})
 
-                for file in files:
-                    if file['Key'] in d_keys:
-                        deletes_list.append({'Key': file['Key'], 'VersionId': file['VersionId']})
+                    for file in files:
+                        if file['Key'] in d_keys:
+                            deletes_list.append({'Key': file['Key'], 'VersionId': file['VersionId']})
 
-                for i in range(0, len(deletes_list), 1000):
-                    d_chunk = deletes_list[i:i + 1000]
-                    _ = self._client.delete_objects(Bucket=self._bucket, Delete={'Objects': d_chunk, 'Quiet': True})
+                    for i in range(0, len(deletes_list), 1000):
+                        d_chunk = deletes_list[i:i + 1000]
+                        _ = self._client.delete_objects(Bucket=self._bucket, Delete={'Objects': d_chunk, 'Quiet': True})
 
-            return deletes_list
+                return deletes_list
         else:
             raise ValueError('File is open for read only.')
 
 
     def __getitem__(self, key: str):
-        value = utils.get_object_final(key, self._bucket, self._client, self._public_url, self._buffer_size, self._read_timeout, self._provider, self._compression, self._cache)
+        value = utils.get_object_final(key, self._bucket, self._client, self._public_url, self._buffer_size, self._read_timeout, self._provider, self._compression, self._cache, self._return_bytes)
 
         if value is None:
             raise KeyError(key)
@@ -200,22 +233,24 @@ class S3DBM(MutableMapping):
 
     def __setitem__(self, key: str, value: Union[bytes, io.IOBase]):
         if self._write:
-            if isinstance(value, bytes):
-                value = io.BytesIO(value)
-            _ = self._executor.submit(utils.put_object_s3, self._client, self._bucket, key, value, self._buffer_size, self._compression)
-            # utils.put_object_s3(self._client, self._bucket, key, value, self._buffer_size, self._compression)
+            with self._lock:
+                if isinstance(value, bytes):
+                    value = io.BytesIO(value)
+                _ = self._executor.submit(utils.put_object_s3, self._client, self._bucket, key, value, self._buffer_size, self._compression)
+                # utils.put_object_s3(self._client, self._bucket, key, value, self._buffer_size, self._compression)
         else:
             raise ValueError('File is open for read only.')
 
     def __delitem__(self, key):
         if self._write:
-            _ = self._executor.submit(self._client.delete_object, Bucket=self._bucket, Key=key)
-            # self._client.delete_object(Key=key, Bucket=self._bucket)
-            if self._cache is not None:
-                try:
-                    del self._cache[key]
-                except:
-                    pass
+            with self._lock:
+                _ = self._executor.submit(self._client.delete_object, Bucket=self._bucket, Key=key)
+                # self._client.delete_object(Key=key, Bucket=self._bucket)
+                if self._cache is not None:
+                    try:
+                        del self._cache[key]
+                    except:
+                        pass
         else:
             raise ValueError('File is open for read only.')
 
@@ -228,21 +263,22 @@ class S3DBM(MutableMapping):
     def clear(self, are_you_sure=False):
         if self._write:
             if are_you_sure:
-                files, dms = utils.list_object_versions_s3(self._client, self._bucket, delete_markers=True)
+                with self._lock:
+                    files, dms = utils.list_object_versions_s3(self._client, self._bucket, delete_markers=True)
 
-                d_keys = {dm['Key']: dm['VersionId'] for dm in dms}
+                    d_keys = {dm['Key']: dm['VersionId'] for dm in dms}
 
-                if d_keys:
-                    deletes_list = []
-                    for key, vid in d_keys.items():
-                        deletes_list.append({'Key': key, 'VersionId': vid})
+                    if d_keys:
+                        deletes_list = []
+                        for key, vid in d_keys.items():
+                            deletes_list.append({'Key': key, 'VersionId': vid})
 
-                    for file in files:
-                        deletes_list.append({'Key': file['Key'], 'VersionId': file['VersionId']})
+                        for file in files:
+                            deletes_list.append({'Key': file['Key'], 'VersionId': file['VersionId']})
 
-                    for i in range(0, len(deletes_list), 1000):
-                        d_chunk = deletes_list[i:i + 1000]
-                        _ = self._client.delete_objects(Bucket=self._bucket, Delete={'Objects': d_chunk, 'Quiet': True})
+                        for i in range(0, len(deletes_list), 1000):
+                            d_chunk = deletes_list[i:i + 1000]
+                            _ = self._client.delete_objects(Bucket=self._bucket, Delete={'Objects': d_chunk, 'Quiet': True})
             else:
                 raise ValueError("I don't think you're sure...this will delete all objects in the bucket...")
         else:
@@ -250,19 +286,22 @@ class S3DBM(MutableMapping):
 
     def close(self, force_close=False):
         self._executor.shutdown(cancel_futures=force_close)
+        self._manager.shutdown()
 
     # def __del__(self):
     #     self.close()
 
     def sync(self):
-        if self._write:
-            self._executor.shutdown()
-            del self._executor
-            self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=self._threads)
+        self._executor.shutdown()
+        del self._executor
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=self._threads)
+
+    def flush(self):
+        self.sync()
 
 
 def open(
-    bucket: str, client: botocore.client.BaseClient=None, connection_config: utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression: bool=True, cache: MutableMapping=None):
+    bucket: str, client: botocore.client.BaseClient=None, connection_config: utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression: bool=True, cache: MutableMapping=None, return_bytes: bool=False):
     """
     Open an S3 dbm-style database. This allows the user to interact with an S3 bucket like a MutableMapping (python dict) object. Lots of options including read caching.
 
@@ -327,4 +366,4 @@ def open(
     +---------+-------------------------------------------+
 
     """
-    return S3DBM(bucket, client, connection_config, public_url, flag, buffer_size, retries, read_timeout, provider, threads, compression, cache)
+    return S3DBM(bucket, client, connection_config, public_url, flag, buffer_size, retries, read_timeout, provider, threads, compression, cache, return_bytes)
