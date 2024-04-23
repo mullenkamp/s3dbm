@@ -15,7 +15,7 @@ When the remote hash file is uploaded to s3 (when it's been changed locally), a 
 
 The local hash is only created if the database is opened for write access. Whenever a value is added or changed in the data file, then the local hash file is updated with the value hash. When pushing data back to the s3 remote, the local has is compared to the remote hash, and only those keys/values that have changed will be uploaded. Once the data has been uploaded, then the remote hash file gets updated with the new hashes and is also uploaded. A method should be run if the local hashes need to be generated from an existing database. Maybe call it .get_local_hash.
 
-An s3 lock (legal hold) can be made on the main s3dbm metadata file when opened for write.
+An s3 lock (legal hold) can be made on the main s3dbm metadata file when opened for write. Another alternative is to create an object in the s3 remote specifically for locking. This is preferable since the metadata file needs to be uploaded last. If the metadata file was used as the lock, then the lock would have to be released prior to finishing the changes to upload the updated metadata file. A separate lock file can stay locked until all uploads are finished.
 
 The ETags in the s3 list objects request are MD5 hashes, which should be used as the local and remote hashes. If the user thinks that the hashes have gotten messed up, a method should be run to regenerate the remote hash file from the s3 list objects request. Maybe call it .get_remote_hash.
 
@@ -27,4 +27,5 @@ The methods .keys, .values, and .items should have the kwarg "keys" to only iter
 
 ? Make an option during opening to open without local caching? Consequently, no local files would be created.
 
-The remote hash file can simply be a compressed json file that is fully loaded into memory and uploaded back to the remote s3. This is ok because the entire file has to be read/written to/from s3 whenever there are changes.
+The remote hash file can simply be a compressed json file that is fully loaded into memory and uploaded back to the remote s3. This is ok because the entire file has to be read/written to/from s3 whenever there are changes. I've decided against it...having to read in large-ish files every time s3dbm is opened seems excessive. I've made a new FixedValue booklet that will be used for the remote and local hash files.
+
