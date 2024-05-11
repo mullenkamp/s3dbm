@@ -15,7 +15,6 @@ import concurrent.futures
 import multiprocessing
 import threading
 import booklet
-import s3tethys
 
 import utils # TODO
 # from . import utils
@@ -32,7 +31,21 @@ class S3dbm(MutableMapping):
     """
 
     """
-    def __init__(self, local_db_path: Union[str, pathlib.Path], remote_db_path: str, bucket: str, client: botocore.client.BaseClient=None, connection_config: utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, read_timeout: int=120, provider: str=None, threads: int=10, object_lock=False, **local_storage_kwargs):
+    def __init__(
+            self,
+            local_db_path: Union[str, pathlib.Path],
+            flag: str = "r",
+            remote_db_key: str=None,
+            bucket: str=None,
+            client: botocore.client.BaseClient=None,
+            connection_config: utils.ConnectionConfig=None,
+            public_url: HttpUrl=None,
+            buffer_size: int=524288,
+            read_timeout: int=60,
+            threads: int=10,
+            remote_object_lock=False,
+            **local_storage_kwargs,
+            ):
         """
 
         """
