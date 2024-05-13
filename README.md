@@ -25,7 +25,15 @@ The methods .keys, .values, and .items should have the kwarg "keys" to only iter
 
 ? Make a .diff method to determine what keys/values are different between the local and remote?
 
-? Make an option during opening to open without local caching? Consequently, no local files would be created.
+The file should be able to be opened without S3 connection data. The user can work locally. But to push the file up to S3, the user would have to reopen it with S3 connection data. In this circumstance, s3dbm should say that a new S3 object has been created at initialisation.
 
-The remote hash file can simply be a compressed json file that is fully loaded into memory and uploaded back to the remote s3. This is ok because the entire file has to be read/written to/from s3 whenever there are changes. I've decided against it...having to read in large-ish files every time s3dbm is opened seems excessive. I've made a new FixedValue booklet that will be used for the remote and local hash files.
+Create a proper __del__ method that removes the local and remote files.
+
+The hash files:
+Add in a date time stamp of 6 bytes to ms precision. 
+Add in object size as 4 bytes.
+
+dt1 = datetime.datetime.now(datetime.timezone.utc)
+ms_int = round(dt1.timestamp() * 1000)
+dt2 = datetime.datetime.fromtimestamp(ms_int*0.001, datetime.timezone.utc)
 

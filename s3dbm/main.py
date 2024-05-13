@@ -15,6 +15,7 @@ import concurrent.futures
 import multiprocessing
 import threading
 import booklet
+import s3func
 
 import utils # TODO
 # from . import utils
@@ -37,13 +38,13 @@ class S3dbm(MutableMapping):
             flag: str = "r",
             remote_db_key: str=None,
             bucket: str=None,
-            client: botocore.client.BaseClient=None,
-            connection_config: utils.ConnectionConfig=None,
-            public_url: HttpUrl=None,
+            connection_config: s3func.utils.ConnectionConfig=None,
+            remote_url: HttpUrl=None,
             buffer_size: int=524288,
             read_timeout: int=60,
             threads: int=10,
             remote_object_lock=False,
+            init_remote=True,
             **local_storage_kwargs,
             ):
         """
@@ -52,7 +53,7 @@ class S3dbm(MutableMapping):
         # if local_storage not in utils.local_storage_options:
         #     raise ValueError('local_storage must be one of {}.'.format(', '.join(utils.local_storage_options)))
 
-        if (connection_config is None) and (client is None):
+        if connection_config is None:
             if flag != 'r':
                 raise ValueError("If flag != 'r', then either connection_config or client must be defined.")
             elif public_url is None:
