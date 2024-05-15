@@ -112,5 +112,6 @@ ENV/
 
 # S3 config file for tests
 s3dbm/tests/s3_config.toml
-s3dbm/tests/*.s3dbm
+s3dbm/tests/*.s3dbm*
+s3dbm/tests/*.s3dbm.*
 

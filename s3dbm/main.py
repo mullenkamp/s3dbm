@@ -17,7 +17,7 @@ import threading
 import booklet
 import s3func
 
-import utils # TODO
+import utils
 # from . import utils
 
 # uuid_s3dbm = b'K=d:\xa89F(\xbc\xf5 \xd7$\xbd;\xf2'
@@ -74,52 +74,76 @@ class S3dbm(MutableMapping):
         else:
             raise ValueError("Invalid flag")
 
-        ## Check local_storage_kwargs
-        local_file_path = pathlib.Path(local_db_path)
+        ## Pre-processing
+        local_meta_path = pathlib.Path(local_db_path)
 
-        # local_storage_kwargs = utils.check_local_storage_kwargs(local_storage, local_storage_kwargs, local_file_path)
+        if 'n_buckets' not in local_storage_kwargs:
+            local_storage_kwargs['n_buckets'] = utils.default_n_buckets
+        local_storage_kwargs.update({'key_serializer': 'str', 'value_serializer': 'bytes'})
+        if value_serializer in booklet.serializers.serial_name_dict:
+            value_serializer_code = booklet.serializers.serial_name_dict[value_serializer]
+        else:
+            raise ValueError(f'value_serializer must be one of {booklet.available_serializers}.')
 
-        ## Check if object already exists in S3
-        obj_key = remote_db_path.lstrip('/')
-        obj = utils.get_object_s3(obj_key, bucket, client, public_url, buffer_size, read_timeout, provider)
+        ## Check for remote access
+        url_session, s3, remote_access = utils.init_remote_access(flag, bucket, connection_config, remote_url, threads, read_timeout, init_remote)
 
-        if (obj is None) and (flag in ('r', 'w')):
-            raise ValueError('remote db object not found.')
-        # elif flag == 'n':
+        ## Init metadata
+        meta, meta_in_remote = utils.init_metadata(local_meta_path, flag, url_session, s3, remote_access, remote_url, remote_db_key, bucket, value_serializer, local_storage_kwargs)
+        s3dbm_meta = meta['s3dbm']
 
+        ## Init local_storage_kwargs
+        local_data_path = utils.init_local_storage(local_meta_path, flag, s3dbm_meta)
 
+        ## Init remote hash file
+        if remote_access and meta_in_remote:
+            remote_hash_path = utils.init_remote_hash_file(local_meta_path, remote_db_key, remote_url, s3dbm_meta, url_session, s3, bucket)
+        else:
+            remote_hash_path = None
 
+        ## Assign properties
         self._write = write
         self._buffer_size = buffer_size
-        self._read_timeout = read_timeout
-        self._client = client
-        self._public_url = public_url
+        self._s3 = s3
+        self._url_session = url_session
+        self._remote_access = remote_access
         self._bucket = bucket
-        # self._key_prefix = key_prefix
-        self._provider = provider
+        self._meta = meta
         self._threads = threads
+        self._local_meta_path = local_meta_path
+        self._local_data_path = local_data_path
+        self._remote_hash_path = remote_hash_path
+        self._value_serializer = booklet.serializers.serial_int_dict[value_serializer_code]
 
-        self._manager = multiprocessing.Manager()
-        self._lock = self._manager.Lock()
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
+
+        # self._manager = multiprocessing.Manager()
+        # self._lock = self._manager.Lock()
+        # self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
 
 
-    def keys(self, prefix: str='', start_after: str='', delimiter: str=''):
-        params = utils.build_params(self._bucket, start_after=start_after, prefix=prefix)
+    def _pre_value(self, value) -> bytes:
 
-        while True:
-            js1 = self._client.list_objects_v2(**params)
+        ## Serialize to bytes
+        try:
+            value = self._value_serializer.dumps(value)
+        except Exception as exc:
+            raise utils.SerializeError(exc, self)
 
-            if 'Contents' in js1:
-                for k in js1['Contents']:
-                    yield k['Key']
+        return value
 
-                if 'NextContinuationToken' in js1:
-                    params['ContinuationToken'] = js1['NextContinuationToken']
-                else:
-                    break
-            else:
-                break
+    def _post_value(self, value: bytes):
+
+        ## Serialize from bytes
+        value = self._value_serializer.loads(value)
+
+        return value
+
+
+    def keys(self):
+        """
+
+        """
+
 
 
     def items(self, keys: List[str]=None, prefix: str='', start_after: str='', delimiter: str=''):

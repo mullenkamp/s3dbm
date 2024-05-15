@@ -16,6 +16,8 @@ import booklet
 import orjson
 import portalocker
 import s3func
+import urllib3
+import shutil
 # from collections.abc import Mapping, MutableMapping
 # from __init__ import __version__ as version
 
@@ -55,7 +57,7 @@ class SerializeError(BaseError):
 ### Functions
 
 
-def init_remote_access(flag, bucket, connection_config, remote_url, threads):
+def init_remote_access(flag, bucket, connection_config, remote_url, threads, read_timeout, init_remote):
     """
 
     """
@@ -64,69 +66,124 @@ def init_remote_access(flag, bucket, connection_config, remote_url, threads):
     remote_access = False
 
     if remote_url is not None:
-        url_session = s3func.url_session(threads)
+        url_session = s3func.url_session(threads, read_timeout=read_timeout)
         remote_access = True
     if (bucket is not None) and (connection_config is not None):
-        s3 = s3func.s3_client(connection_config, threads)
+        s3 = s3func.s3_client(connection_config, threads, read_timeout=read_timeout)
         remote_access = True
+
+    if not init_remote:
+        remote_access = False
 
     return url_session, s3, remote_access
 
 
-def init_local_storage(local_db_path, flag, value_serializer, local_storage_kwargs):
+def init_metadata(local_file_path, flag, url_session, s3, remote_access, remote_url, remote_db_key, bucket, value_serializer, local_storage_kwargs):
     """
 
     """
-    local_file_path = pathlib.Path(local_db_path)
+    meta = None
+    meta_in_remote = False
 
-    local_file_exists = local_file_path.exists()
+    if remote_access:
+        if (url_session is not None) and (remote_url is not None):
+            meta0 = s3func.url_to_stream(remote_url, url_session)
+        else:
+            meta0 = s3func.get_object(remote_db_key, bucket, s3)
+        if meta0.status == 200:
+            meta0b = meta0.read()
+            with open(local_file_path, 'wb') as f:
+                f.write(meta0b)
 
-    local_data_file_name = local_file_path.name + '.data'
-    local_data_path = local_file_path.parent.joinpath(local_data_file_name)
+            meta = orjson.loads(meta0b)
+            meta_in_remote = True
 
-    if not local_file_exists:
+            # file = io.open(local_file_path, 'w+b')
+            # portalocker.lock(file, portalocker.LOCK_EX)
 
-        if flag in {'c', 'n'}:
+            # file.write(orjson.dumps(meta, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_OMIT_MICROSECONDS | orjson.OPT_SERIALIZE_NUMPY))
+            # file.flush()
+            # file.close()
 
-            ## Create local data store
-            if 'n_buckets' not in local_storage_kwargs:
-                local_storage_kwargs['n_buckets'] = default_n_buckets
-            local_storage_kwargs.update({'key_serializer': 'str', 'value_serializer': value_serializer})
-            with booklet.open(local_data_path, flag='n', **local_storage_kwargs) as f:
-                pass
+    if meta is None:
+        if local_file_path.exists():
+            with open(local_file_path, 'rb') as f:
+                meta = orjson.loads(f.read())
 
-            ## Create metadata file
+            # file = io.open(local_file_path, 'rb')
+            # portalocker.lock(file, portalocker.LOCK_EX)
+            # meta = orjson.loads(file.read())
+            # file.close()
+
+        else:
             meta = {
                 's3dbm': {
                     'version': version,
                     'local_data_kwargs': local_storage_kwargs,
+                    'value_serializer': value_serializer,
                     'remote_hash': '',
                     }
                 }
+            with open(local_file_path, 'wb') as f:
+                f.write(orjson.dumps(meta, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_OMIT_MICROSECONDS | orjson.OPT_SERIALIZE_NUMPY))
 
-            file = io.open(local_file_path, 'w+b')
-            portalocker.lock(file, portalocker.LOCK_EX)
+    return meta, meta_in_remote
 
-            file.write(orjson.dumps(meta, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_OMIT_MICROSECONDS | orjson.OPT_SERIALIZE_NUMPY))
-            file.flush()
-            file.close()
 
-        else:
-            raise ValueError("The flag must be either 'c' or 'n' if the file doesn't exist.")
+def init_local_storage(local_file_path, flag, s3dbm_meta):
+    """
+
+    """
+    local_data_file_name = local_file_path.name + '.data'
+    local_data_path = local_file_path.parent.joinpath(local_data_file_name)
+
+    if local_data_path.exists():
+
+        if flag in {'c', 'n'}:
+
+            ## Create local data store if necessary
+            # with booklet.open(local_data_path, flag=flag, **s3dbm_meta['local_data_kwargs']) as f:
+            #     pass
+
+            f = booklet.open(local_data_path, flag=flag, **s3dbm_meta['local_data_kwargs'])
+
     else:
 
-        ## Read metadata
-        with open(local_file_path, 'rb') as f:
-            meta = orjson.loads(f.read())
-
         ## Check/create local data file
-        if not local_data_path.exists():
-            with booklet.open(local_data_path, flag='n', **meta['s3dbm']['local_data_kwargs']) as f:
-                pass
+        # if not local_data_path.exists():
+        #     with booklet.open(local_data_path, flag='n', **s3dbm_meta['local_data_kwargs']) as f:
+        #         pass
 
-    return meta, local_data_path
+        f = booklet.open(local_data_path, flag='n', **s3dbm_meta['local_data_kwargs'])
+
+    return f
 
 
+def init_remote_hash_file(local_file_path, remote_db_key, remote_url, s3dbm_meta, url_session, s3, bucket):
+    """
+
+    """
+    f = None
+
+    remote_hash_name = local_file_path.name + '.remote_hash'
+
+    if (url_session is not None) and (remote_url is not None):
+        url_grp = urllib3.util.parse_url(remote_url)
+        url_path = pathlib.Path(url_grp.path)
+        remote_hash_path = url_path.parent.joinpath(remote_hash_name)
+        remote_hash_url = url_grp.scheme + '://' + url_grp.host + str(remote_hash_path)
+
+        hash0 = s3func.url_to_stream(remote_hash_url, url_session)
+    else:
+        key_path = pathlib.Path(remote_db_key)
+        remote_hash_key = key_path.parent.joinpath(remote_hash_name)
+        hash0 = s3func.get_object(str(remote_hash_key), bucket, s3)
+    if hash0.status == 200:
+        remote_hash_path = local_file_path.parent.joinpath(remote_hash_name)
+        with open(remote_hash_path, 'wb') as f:
+            shutil.copyfileobj(hash0, f)
+
+    return remote_hash_path
 
 
 
