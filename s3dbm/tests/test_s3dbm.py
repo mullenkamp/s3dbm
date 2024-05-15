@@ -24,16 +24,18 @@ except:
         }
 
 
+connection_config = conn_config
 bucket = 'achelous'
 flag = "w"
 buffer_size = 524288
 read_timeout = 60
 threads = 10
 object_lock = False
-file_name = 'stns_data.blt'
+file_name = 'test.s3dbm'
+local_db_path = script_path.joinpath(file_name)
 obj_key = uuid.uuid4().hex
 base_url = 'https://b2.tethys-ts.xyz/file/' + bucket + '/'
-url = base_url +  obj_key
+remote_url = base_url +  obj_key
 
 s3 = s3_client(conn_config)
 

@@ -40,6 +40,7 @@ class S3dbm(MutableMapping):
             bucket: str=None,
             connection_config: s3func.utils.ConnectionConfig=None,
             remote_url: HttpUrl=None,
+            value_serializer: str = None,
             buffer_size: int=524288,
             read_timeout: int=60,
             threads: int=10,
@@ -53,34 +54,30 @@ class S3dbm(MutableMapping):
         # if local_storage not in utils.local_storage_options:
         #     raise ValueError('local_storage must be one of {}.'.format(', '.join(utils.local_storage_options)))
 
-        if connection_config is None:
-            if flag != 'r':
-                raise ValueError("If flag != 'r', then either connection_config or client must be defined.")
-            elif public_url is None:
-                raise ValueError("If flag == 'r', then connection_config, client, or public_url must be defined.")
+        # if connection_config is None:
+        #     if flag != 'r':
+        #         raise ValueError("If flag != 'r', then either connection_config or client must be defined.")
+        #     elif public_url is None:
+        #         raise ValueError("If flag == 'r', then connection_config, client, or public_url must be defined.")
 
-        elif (connection_config is not None) and (client is None):
-            client = utils.s3_client(connection_config, threads, read_timeout=read_timeout)
+        # elif (connection_config is not None) and (client is None):
+        #     client = utils.s3_client(connection_config, threads, read_timeout=read_timeout)
 
         if flag == "r":  # Open existing database for reading only (default)
             write = False
-            overwrite = False
         elif flag == "w":  # Open existing database for reading and writing
             write = True
-            overwrite = False
         elif flag == "c":  # Open database for reading and writing, creating it if it doesn't exist
             write = True
-            overwrite = False
         elif flag == "n":  # Always create a new, empty database, open for reading and writing
             write = True
-            overwrite = True
         else:
             raise ValueError("Invalid flag")
 
         ## Check local_storage_kwargs
         local_file_path = pathlib.Path(local_db_path)
 
-        local_storage_kwargs = utils.check_local_storage_kwargs(local_storage, local_storage_kwargs, local_file_path)
+        # local_storage_kwargs = utils.check_local_storage_kwargs(local_storage, local_storage_kwargs, local_file_path)
 
         ## Check if object already exists in S3
         obj_key = remote_db_path.lstrip('/')
@@ -315,7 +312,7 @@ class S3dbm(MutableMapping):
 
 
 def open(
-    bucket: str, client: botocore.client.BaseClient=None, connection_config: utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression: bool=True, cache: MutableMapping=None, return_bytes: bool=False):
+    bucket: str, connection_config: s3func.utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression: bool=True, cache: MutableMapping=None, return_bytes: bool=False):
     """
     Open an S3 dbm-style database. This allows the user to interact with an S3 bucket like a MutableMapping (python dict) object. Lots of options including read caching.
 
@@ -380,4 +377,4 @@ def open(
     +---------+-------------------------------------------+
 
     """
-    return S3DBM(bucket, client, connection_config, public_url, flag, buffer_size, retries, read_timeout, provider, threads, compression, cache, return_bytes)
+    return S3DBM(bucket, connection_config, public_url, flag, buffer_size, retries, read_timeout, provider, threads, compression, cache, return_bytes)
