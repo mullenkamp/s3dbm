@@ -45,7 +45,6 @@ class S3dbm(MutableMapping):
             read_timeout: int=60,
             threads: int=10,
             remote_object_lock=False,
-            init_remote=True,
             **local_storage_kwargs,
             ):
         """
@@ -86,39 +85,38 @@ class S3dbm(MutableMapping):
             raise ValueError(f'value_serializer must be one of {booklet.available_serializers}.')
 
         ## Check for remote access
-        url_session, s3, remote_access = utils.init_remote_access(flag, bucket, connection_config, remote_url, threads, read_timeout, init_remote)
+        session, s3, remote_access, host_url, remote_base_url = utils.init_remote_access(flag, bucket, connection_config, remote_url, threads, read_timeout)
 
         ## Init metadata
-        meta, meta_in_remote = utils.init_metadata(local_meta_path, flag, url_session, s3, remote_access, remote_url, remote_db_key, bucket, value_serializer, local_storage_kwargs)
+        meta, get_remote_keys = utils.init_metadata(local_meta_path, flag, session, s3, remote_access, remote_url, remote_db_key, bucket, value_serializer, local_storage_kwargs)
         s3dbm_meta = meta['s3dbm']
 
         ## Init local_storage_kwargs
-        local_data_path = utils.init_local_storage(local_meta_path, flag, s3dbm_meta)
+        local_data = utils.init_local_storage(local_meta_path, flag, s3dbm_meta)
 
         ## Init remote hash file
-        if remote_access and meta_in_remote:
-            remote_hash_path = utils.init_remote_hash_file(local_meta_path, remote_db_key, remote_url, s3dbm_meta, url_session, s3, bucket)
+        if remote_access:
+            remote_keys = utils.init_remote_keys_file(local_meta_path, remote_db_key, remote_url, s3dbm_meta, session, s3, bucket, get_remote_keys, host_url, remote_base_url)
         else:
-            remote_hash_path = None
+            remote_keys = None
 
         ## Assign properties
         self._write = write
         self._buffer_size = buffer_size
         self._s3 = s3
-        self._url_session = url_session
+        self._session = session
         self._remote_access = remote_access
         self._bucket = bucket
         self._meta = meta
         self._threads = threads
         self._local_meta_path = local_meta_path
-        self._local_data_path = local_data_path
-        self._remote_hash_path = remote_hash_path
+        self._local_data = local_data
+        self._remote_keys = remote_keys
         self._value_serializer = booklet.serializers.serial_int_dict[value_serializer_code]
-
 
         # self._manager = multiprocessing.Manager()
         # self._lock = self._manager.Lock()
-        # self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
 
 
     def _pre_value(self, value) -> bytes:
@@ -143,13 +141,18 @@ class S3dbm(MutableMapping):
         """
 
         """
+        if self._remote_keys:
+            return self._remote_keys.keys()
+        else:
+            return self._local_data.keys()
 
 
-
-    def items(self, keys: List[str]=None, prefix: str='', start_after: str='', delimiter: str=''):
+    def items(self, keys: List[str]=None):
         """
 
         """
+        if self._remote_keys:
+            pass
         if keys is None:
             keys = self.keys(prefix, start_after, delimiter)
         futures = {}
@@ -201,7 +204,10 @@ class S3dbm(MutableMapping):
 
 
     def __contains__(self, key):
-        return key in self.keys()
+        if self._remote_hash:
+            return key in self._remote_keys
+        else:
+            return key in self._local_data
 
 
     def get(self, key, default=None):
@@ -321,7 +327,9 @@ class S3dbm(MutableMapping):
 
     def close(self, force_close=False):
         self._executor.shutdown(cancel_futures=force_close)
-        self._manager.shutdown()
+        # self._manager.shutdown()
+        utils.close_files(self._local_data, self._remote_keys)
+
 
     # def __del__(self):
     #     self.close()
@@ -330,9 +338,12 @@ class S3dbm(MutableMapping):
         self._executor.shutdown()
         del self._executor
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=self._threads)
+        if self._remote_keys:
+            self._remote_keys.sync()
+        self._local_data.sync()
 
-    def flush(self):
-        self.sync()
+    # def flush(self):
+    #     self.sync()
 
 
 def open(
