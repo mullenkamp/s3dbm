@@ -68,6 +68,20 @@ class S3dbmSerializeError(BaseError):
 ### Functions
 
 
+def bytes_to_int(b, signed=False):
+    """
+    Remember for a single byte, I only need to do b[0] to get the int. And it's really fast as compared to the function here. This is only needed for bytes > 1.
+    """
+    return int.from_bytes(b, 'little', signed=signed)
+
+
+def int_to_bytes(i, byte_len, signed=False):
+    """
+
+    """
+    return i.to_bytes(byte_len, 'little', signed=signed)
+
+
 def make_timestamp(value=None):
     """
 
@@ -214,18 +228,18 @@ def init_remote_keys_file(local_meta_path, remote_db_key, remote_url, s3dbm_meta
         if (session is not None) and (remote_url is not None):
             remote_keys_url_path = remote_base_url.joinpath(remote_keys_name)
             remote_keys_url = host_url + str(remote_keys_url_path)
-    
+
             hash0 = s3func.url_to_stream(remote_keys_url, session)
         else:
             key_path = pathlib.Path(remote_db_key)
             remote_keys_key = key_path.parent.joinpath(remote_keys_name)
             hash0 = s3func.get_object(str(remote_keys_key), bucket, s3)
-    
+
         if hash0.status == 200:
             remote_keys_path = local_meta_path.parent.joinpath(remote_keys_name)
             with open(remote_keys_path, 'wb') as f:
                 shutil.copyfileobj(hash0, f)
-    
+
             f = booklet.FixedValue(remote_keys_path, 'w')
         else:
             f = booklet.FixedValue(remote_keys_path, 'n', key_serializer='str', value_len=26)
@@ -254,16 +268,53 @@ def get_remote_value(local_data, remote_keys, key, bucket=None, s3=None, session
 
     valb = stream.read()
     mod_time_int = make_timestamp(stream.metadata['last_modified'])
-    mod_time_bytes = booklet.utils.int_to_bytes(mod_time_int, 6)
+    mod_time_bytes = int_to_bytes(mod_time_int, 6, signed=True)
 
     local_data[key] = mod_time_bytes + valb
 
     if remote_keys:
         val_md5 = hashlib.md5(valb)
-        obj_size_bytes = booklet.utils.int_to_bytes(len(valb), 4)
-        remote_keys[key] = obj_size_bytes + mod_time_bytes + val_md5.digest()
+        obj_size_bytes = int_to_bytes(len(valb), 4)
+        remote_keys[key] = mod_time_bytes + obj_size_bytes + val_md5.digest()
 
-    return key
+    return valb
+
+
+def get_value(local_data, remote_keys, key, bucket=None, s3=None, session=None, host_url=None, remote_base_url=None):
+    """
+
+    """
+    if key in local_data:
+        local_value_bytes = local_data[key]
+        value_bytes = local_value_bytes[6:]
+    else:
+        value_bytes = None
+
+    if remote_keys:
+        if key not in remote_keys:
+            return None
+            # close_files(local_data, remote_keys)
+            # raise S3dbmKeyError(f'{key} does not exist.')
+
+        remote_value_bytes = remote_keys[key]
+        remote_mod_time_int = bytes_to_int(remote_value_bytes[:6], True)
+
+        if value_bytes:
+            local_mod_time_int = bytes_to_int(local_value_bytes[:6], True)
+            if remote_mod_time_int > local_mod_time_int:
+                value_bytes = get_remote_value(local_data, remote_keys, key, bucket, s3, session, host_url, remote_base_url)
+        else:
+            value_bytes = get_remote_value(local_data, remote_keys, key, bucket, s3, session, host_url, remote_base_url)
+
+    # if value_bytes is None:
+    #     raise S3dbmKeyError(f'{key} does not exist.')
+
+    return value_bytes
+
+
+
+
+
 
 
 

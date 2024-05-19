@@ -112,6 +112,7 @@ class S3dbm(MutableMapping):
         self._local_meta_path = local_meta_path
         self._local_data = local_data
         self._remote_keys = remote_keys
+        self._deletes = []
         self._value_serializer = booklet.serializers.serial_int_dict[value_serializer_code]
 
         # self._manager = multiprocessing.Manager()
@@ -164,7 +165,7 @@ class S3dbm(MutableMapping):
             yield futures[f], f.result()
 
 
-    def values(self, keys: List[str]=None, prefix: str='', start_after: str='', delimiter: str='', threads=10):
+    def values(self, keys: List[str]=None):
         if keys is None:
             keys = self.keys(prefix, start_after, delimiter)
         futures = {}
@@ -211,12 +212,12 @@ class S3dbm(MutableMapping):
 
 
     def get(self, key, default=None):
-        value = utils.get_object_final(key, self._bucket, self._client, self._public_url, self._buffer_size, self._read_timeout, self._provider, self._compression, self._cache, self._return_bytes)
+        value = utils.get_value(self._local_data, self._remote_keys, key, self._bucket, self._s3, self._session, self._hiost_url, self._remote_base_url)
 
         if value is None:
             return default
         else:
-            return value
+            return self._post_value(value)
 
 
     def update(self, key_value_dict: Union[Dict[str, bytes], Dict[str, io.IOBase]]):
@@ -264,34 +265,29 @@ class S3dbm(MutableMapping):
 
 
     def __getitem__(self, key: str):
-        value = utils.get_object_final(key, self._bucket, self._client, self._public_url, self._buffer_size, self._read_timeout, self._provider, self._compression, self._cache, self._return_bytes)
+        value = utils.get_value(self._local_data, self._remote_keys, key, self._bucket, self._s3, self._session, self._hiost_url, self._remote_base_url)
 
         if value is None:
-            raise KeyError(key)
+            raise utils.S3dbmKeyError(f'{key} does not exist.', self)
         else:
-            return value
+            return self._post_value(value)
 
 
     def __setitem__(self, key: str, value: Union[bytes, io.IOBase]):
         if self._write:
-            with self._lock:
-                if isinstance(value, bytes):
-                    value = io.BytesIO(value)
-                _ = self._executor.submit(utils.put_object_s3, self._client, self._bucket, key, value, self._buffer_size, self._compression)
-                # utils.put_object_s3(self._client, self._bucket, key, value, self._buffer_size, self._compression)
+            dt_ms_int = utils.make_timestamp()
+            self._local_data[key] = utils.int_to_bytes(dt_ms_int, 6) + self._pre_value(value)
         else:
             raise ValueError('File is open for read only.')
 
     def __delitem__(self, key):
         if self._write:
-            with self._lock:
-                _ = self._executor.submit(self._client.delete_object, Bucket=self._bucket, Key=key)
-                # self._client.delete_object(Key=key, Bucket=self._bucket)
-                if self._cache is not None:
-                    try:
-                        del self._cache[key]
-                    except:
-                        pass
+            if self._remote_keys:
+                del self._remote_keys[key]
+                self._deletes.append(key)
+
+            if key in self._local_data:
+                del self._local_data[key]
         else:
             raise ValueError('File is open for read only.')
 
