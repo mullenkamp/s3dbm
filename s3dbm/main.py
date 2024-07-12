@@ -35,16 +35,15 @@ class S3dbm(MutableMapping):
     def __init__(
             self,
             local_db_path: Union[str, pathlib.Path],
+            remote_url: HttpUrl=None,
             flag: str = "r",
             remote_db_key: str=None,
             bucket: str=None,
-            connection_config: s3func.utils.ConnectionConfig=None,
-            remote_url: HttpUrl=None,
+            connection_config: Union[s3func.utils.S3ConnectionConfig, s3func.utils.B2ConnectionConfig]=None,
             value_serializer: str = None,
             buffer_size: int=524288,
             read_timeout: int=60,
             threads: int=10,
-            remote_object_lock=False,
             **local_storage_kwargs,
             ):
         """
@@ -75,44 +74,50 @@ class S3dbm(MutableMapping):
 
         ## Pre-processing
         local_meta_path = pathlib.Path(local_db_path)
+        remote_keys_name = local_meta_path.name + '.remote_keys'
+        remote_keys_path = local_meta_path.parent.joinpath(remote_keys_name)
 
         if 'n_buckets' not in local_storage_kwargs:
-            local_storage_kwargs['n_buckets'] = utils.default_n_buckets
+            n_buckets = utils.default_n_buckets
+            local_storage_kwargs['n_buckets'] = n_buckets
+        else:
+            n_buckets = int(local_storage_kwargs['n_buckets'])
         local_storage_kwargs.update({'key_serializer': 'str', 'value_serializer': 'bytes'})
         if value_serializer in booklet.serializers.serial_name_dict:
             value_serializer_code = booklet.serializers.serial_name_dict[value_serializer]
         else:
             raise ValueError(f'value_serializer must be one of {booklet.available_serializers}.')
 
-        ## Check for remote access
-        session, s3, remote_access, host_url, remote_base_url = utils.init_remote_access(flag, bucket, connection_config, remote_url, threads, read_timeout)
+        ## Check the remote config
+        http_session, s3_session, remote_s3_access, remote_http_access, host_url, remote_base_url = utils.init_remote_config(flag, bucket, connection_config, remote_url, threads, read_timeout)
 
         ## Init metadata
-        meta, get_remote_keys = utils.init_metadata(local_meta_path, flag, session, s3, remote_access, remote_url, remote_db_key, bucket, value_serializer, local_storage_kwargs)
+        meta, meta_in_remote = utils.init_metadata(local_meta_path, remote_keys_path, http_session, s3_session, remote_s3_access, remote_http_access, remote_url, remote_db_key, value_serializer, local_storage_kwargs)
         s3dbm_meta = meta['s3dbm']
 
         ## Init local_storage_kwargs
         local_data = utils.init_local_storage(local_meta_path, flag, s3dbm_meta)
 
-        ## Init remote hash file
-        if remote_access:
-            remote_keys = utils.init_remote_keys_file(local_meta_path, remote_db_key, remote_url, s3dbm_meta, session, s3, bucket, get_remote_keys, host_url, remote_base_url)
+        ## Open remote keys file
+        if meta_in_remote:
+            remote_keys = booklet.FixedValue(remote_keys_path)
         else:
             remote_keys = None
 
         ## Assign properties
         self._write = write
         self._buffer_size = buffer_size
-        self._s3 = s3
-        self._session = session
-        self._remote_access = remote_access
+        self._s3_session = s3_session
+        self._http_session = http_session
+        self._remote_s3_access = remote_s3_access
+        self._remote_http_access = remote_http_access
         self._bucket = bucket
         self._meta = meta
         self._threads = threads
         self._local_meta_path = local_meta_path
         self._local_data = local_data
         self._remote_keys = remote_keys
-        self._deletes = []
+        self._deletes = list()
         self._value_serializer = booklet.serializers.serial_int_dict[value_serializer_code]
 
         # self._manager = multiprocessing.Manager()
@@ -275,8 +280,9 @@ class S3dbm(MutableMapping):
 
     def __setitem__(self, key: str, value: Union[bytes, io.IOBase]):
         if self._write:
-            dt_ms_int = utils.make_timestamp()
-            self._local_data[key] = utils.int_to_bytes(dt_ms_int, 6) + self._pre_value(value)
+            dt_us_int = utils.make_timestamp()
+            val_bytes = self._pre_value(value)
+            self._local_data[key] = utils.int_to_bytes(dt_us_int, 7) + val_bytes
         else:
             raise ValueError('File is open for read only.')
 
@@ -334,8 +340,8 @@ class S3dbm(MutableMapping):
         self._executor.shutdown()
         del self._executor
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=self._threads)
-        if self._remote_keys:
-            self._remote_keys.sync()
+        # if self._remote_keys:
+        #     self._remote_keys.sync()
         self._local_data.sync()
 
     # def flush(self):
@@ -343,7 +349,7 @@ class S3dbm(MutableMapping):
 
 
 def open(
-    bucket: str, connection_config: s3func.utils.ConnectionConfig=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression: bool=True, cache: MutableMapping=None, return_bytes: bool=False):
+    bucket: str, connection_config: Union[s3func.utils.S3ConnectionConfig, s3func.utils.B2ConnectionConfig]=None, public_url: HttpUrl=None, flag: str = "r", buffer_size: int=512000, retries: int=3, read_timeout: int=120, provider: str=None, threads: int=30, compression: bool=True, cache: MutableMapping=None, return_bytes: bool=False):
     """
     Open an S3 dbm-style database. This allows the user to interact with an S3 bucket like a MutableMapping (python dict) object. Lots of options including read caching.
 
