@@ -117,6 +117,7 @@ class S3dbm(MutableMapping):
         self._local_meta_path = local_meta_path
         self._local_data = local_data
         self._remote_keys = remote_keys
+        self._remote_keys_path = remote_keys_path
         self._deletes = list()
         self._value_serializer = booklet.serializers.serial_int_dict[value_serializer_code]
 
@@ -278,7 +279,7 @@ class S3dbm(MutableMapping):
             return self._post_value(value)
 
 
-    def __setitem__(self, key: str, value: Union[bytes, io.IOBase]):
+    def __setitem__(self, key: str, value):
         if self._write:
             dt_us_int = utils.make_timestamp()
             val_bytes = self._pre_value(value)

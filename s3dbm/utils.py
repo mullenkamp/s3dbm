@@ -119,7 +119,7 @@ def init_remote_config(flag, bucket, connection_config, remote_url, threads, rea
     if remote_url is not None:
         url_grp = urllib3.util.parse_url(remote_url)
         if url_grp.scheme is not None:
-            http_session = HttpSession(threads, read_timeout=read_timeout)
+            http_session = HttpSession(threads, read_timeout=read_timeout, stream=False)
             url_path = pathlib.Path(url_grp.path)
             remote_base_url = url_path.parent
             host_url = url_grp.scheme + '://' + url_grp.host
@@ -127,7 +127,7 @@ def init_remote_config(flag, bucket, connection_config, remote_url, threads, rea
         else:
             print(f'{remote_url} is not a proper url.')
     if (bucket is not None) and (connection_config is not None):
-        s3_session = S3Session(connection_config, bucket, threads, read_timeout=read_timeout)
+        s3_session = S3Session(connection_config, bucket, threads, read_timeout=read_timeout, stream=False)
         remote_s3_access = True
 
     if (not remote_s3_access) and (flag != 'r'):
@@ -157,33 +157,17 @@ def init_metadata(local_meta_path, remote_keys_path, http_session, s3_session, r
             func = s3_session.get_object
             key = remote_db_key
 
-        ## While loop due to issue of an incomplete read by urllib3
-        counter = 0
-        while True:
-            meta0 = func(key)
-
-            if meta0.status == 200:
-                try:
-                    if meta0.metadata['file_type'] != 's3dbm':
-                        raise TypeError('The remote file is not an s3dbm file.')
-                    meta0b = meta0.stream.read()
-                    break
-                except urllib3.exceptions.ProtocolError as error:
-                    print(error)
-                    counter += 1
-                    if counter ==5:
-                        raise error
-            elif meta0.status != 404:
-                raise urllib3.exceptions.HTTPError(f'Trying to access the remote returned a {meta0.status} error. It should only return 200 (file is found and returned) or 404 (no file found).')
-
+        meta0 = func(key)
         if meta0.status == 200:
-            remote_meta = orjson.loads(meta0b)
+            if meta0.metadata['file_type'] != 's3dbm':
+                raise TypeError('The remote file is not an s3dbm file.')
+            remote_meta = orjson.loads(meta0.data)
             meta_in_remote = True
 
             ## Determine if the remote keys file needs to be downloaded
             if meta is None:
                 with open(local_meta_path, 'wb') as f:
-                    f.write(meta0b)
+                    f.write(meta0.data)
                 meta = remote_meta
             else:
                 remote_ts = remote_meta['s3dbm']['last_modified']
@@ -192,9 +176,11 @@ def init_metadata(local_meta_path, remote_keys_path, http_session, s3_session, r
                     get_remote_keys_file(local_meta_path, remote_db_key, remote_url, http_session, s3_session, remote_http_access)
 
                     with open(local_meta_path, 'wb') as f:
-                        f.write(meta0b)
+                        f.write(meta0.data)
 
                     meta = remote_meta
+        elif meta0.status != 404:
+            raise urllib3.exceptions.HTTPError(meta0.error)
 
     if meta is None:
         int_us = make_timestamp()
@@ -254,28 +240,12 @@ def get_remote_keys_file(remote_keys_path, remote_db_key, remote_url, http_sessi
 
         func = s3_session.get_object
 
-    ## While loop due to issue of an incomplete read by urllib3
-    counter = 0
-    while True:
-        hash0 = func(remote_keys_key)
-
-        if hash0.status == 200:
-            try:
-                with open(remote_keys_path, 'wb') as f:
-                    shutil.copyfileobj(hash0.stream, f)
-                # f = booklet.FixedValue(remote_keys_path, 'r')
-                break
-            except urllib3.exceptions.ProtocolError as error:
-                print(error)
-                counter += 1
-                if counter ==5:
-                    raise error
-        # elif hash0.status == 404:
-        #     print('No remote keys file found.')
-        #     # f = booklet.FixedValue(remote_keys_path, 'n', key_serializer='str', value_len=26, n_buckets=n_buckets)
-        #     break
-        else:
-            raise urllib3.exceptions.HTTPError(hash0.error)
+    hash0 = func(remote_keys_key)
+    if hash0.status == 200:
+        with open(remote_keys_path, 'wb') as f:
+            shutil.copyfileobj(hash0.data, f)
+    else:
+        raise urllib3.exceptions.HTTPError(hash0.error)
 
     return True
 
@@ -361,6 +331,62 @@ def get_value(local_data, remote_keys, key, bucket=None, s3_client=None, session
 
     return value_bytes
 
+
+#################################################
+### S3 interactions
+
+
+def create_changelog_file(local_data, remote_keys, local_meta_path):
+    """
+    Only check and save by the microsecond timestamp. Might need to add in the md5 hash if this is not sufficient.
+    """
+    changelog_path = local_meta_path.parent.joinpath(local_meta_path.name + '.changelog')
+    f = booklet.FixedValue(changelog_path, 'n', key_serializer='str', value_len=14)
+    if remote_keys:
+        # shutil.copyfile(remote_keys_path, temp_remote_keys_path)
+        # f = booklet.FixedValue(temp_remote_keys_path, 'w')
+        for key, local_val in local_data.items():
+            local_bytes_us = local_val[:7]
+            remote_val = remote_keys.get(key)
+            if remote_val:
+                local_int_us = bytes_to_int(local_bytes_us)
+                remote_bytes_us = remote_val[:7]
+                remote_int_us = bytes_to_int(remote_bytes_us)
+                if local_int_us > remote_int_us:
+                    f[key] = local_bytes_us + remote_bytes_us
+            else:
+                f[key] = local_bytes_us + int_to_bytes(0, 7)
+    else:
+        # f = booklet.FixedValue(temp_remote_keys_path, 'n', key_serializer='str', value_len=26)
+        for key, local_val in local_data.items():
+            local_bytes_us = local_val[:7]
+            f[key] = local_bytes_us + int_to_bytes(0, 7)
+
+    f.sync()
+
+    return f
+
+
+def changelog(local_data, remote_keys, local_meta_path):
+    """
+
+    """
+    f = create_changelog_file(local_data, remote_keys, local_meta_path)
+
+    for key, val in f.items():
+        local_bytes_us = val[:7]
+        remote_bytes_us = val[7:]
+        local_int_us = bytes_to_int(local_bytes_us)
+        remote_int_us = bytes_to_int(remote_bytes_us)
+        if remote_int_us == 0:
+            remote_ts = None
+        else:
+            remote_ts = datetime.fromtimestamp(remote_int_us*0.000001)
+        dict1 = {
+            'key': key,
+            'remote_timestamp': remote_ts,
+            'local_timestamp': datetime.fromtimestamp(local_int_us*0.000001)}
+        yield dict1
 
 
 

@@ -102,7 +102,7 @@ self = S3dbm(
     )
 
 
-
+self['test1'] = list(range(100))
 
 
 
