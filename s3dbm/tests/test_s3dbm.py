@@ -87,7 +87,7 @@ def get_logs(request):
 ################################################
 ### Tests
 
-self = S3dbm(
+self = Session(
     local_db_path,
     remote_url,
     flag,
@@ -98,6 +98,7 @@ self = S3dbm(
     buffer_size=524288,
     read_timeout=60,
     threads=10,
+    break_past_locks=False,
     **local_storage_kwargs
     )
 

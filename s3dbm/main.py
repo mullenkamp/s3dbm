@@ -16,6 +16,9 @@ import multiprocessing
 import threading
 import booklet
 import s3func
+import zstandard as zstd
+import orjson
+import pprint
 
 import utils
 # from . import utils
@@ -28,39 +31,160 @@ import utils
 ### Classes
 
 
-class S3dbm(MutableMapping):
+class UserMetadata(MutableMapping):
     """
 
     """
-    def __init__(
-            self,
-            local_db_path: Union[str, pathlib.Path],
-            remote_url: HttpUrl=None,
-            flag: str = "r",
-            remote_db_key: str=None,
-            bucket: str=None,
-            connection_config: Union[s3func.utils.S3ConnectionConfig, s3func.utils.B2ConnectionConfig]=None,
-            value_serializer: str = None,
-            buffer_size: int=524288,
-            read_timeout: int=60,
-            threads: int=10,
-            **local_storage_kwargs,
-            ):
+    def __init__(self, local_meta_path, metadata: dict, version_date: str=None):
         """
 
         """
-        # if local_storage not in utils.local_storage_options:
-        #     raise ValueError('local_storage must be one of {}.'.format(', '.join(utils.local_storage_options)))
+        version_position = 0
+        user_meta = None
 
-        # if connection_config is None:
-        #     if flag != 'r':
-        #         raise ValueError("If flag != 'r', then either connection_config or client must be defined.")
-        #     elif public_url is None:
-        #         raise ValueError("If flag == 'r', then connection_config, client, or public_url must be defined.")
+        if isinstance(version_date, str):
+            for i, v in enumerate(metadata['versions']):
+                if v['version_date'] == version_date:
+                    user_meta = v['user_metadata']
+                    version_position = i
 
-        # elif (connection_config is not None) and (client is None):
-        #     client = utils.s3_client(connection_config, threads, read_timeout=read_timeout)
+            if user_meta is None:
+                   raise ValueError('version_date is not in the metadata.')
+        else:
+            user_meta = metadata['user_metadata']
 
+        self._metadata = metadata
+        self._user_meta = user_meta
+        self._version_date = version_date
+        self._version_position = version_position
+        self._modified = False
+        self._local_meta_path = local_meta_path
+
+
+    def __repr__(self):
+        """
+
+        """
+        return pprint.pformat(self._user_meta)
+
+    def __setitem__(self, key, value):
+        """
+
+        """
+        self._user_meta[key] = value
+        self._modified = True
+
+
+    def __getitem__(self, key: str):
+        """
+
+        """
+        return self._user_meta[key]
+
+    def __delitem__(self, key):
+        """
+
+        """
+        del self._user_meta[key]
+        self._modified = True
+
+    def clear(self):
+        """
+
+        """
+        self._user_meta.clear()
+        self._modified = True
+
+
+    def keys(self):
+        """
+
+        """
+        return self._user_meta.keys()
+
+
+    def items(self):
+        """
+
+        """
+        return self._user_meta.items()
+
+
+    def values(self, keys: List[str]=None):
+        return self._user_meta.values()
+
+
+    def __iter__(self):
+        return self._user_meta.keys()
+
+    def __len__(self):
+        """
+        """
+        return len(self._user_meta)
+
+
+    def __contains__(self, key):
+        return key in self._user_meta
+
+
+    def get(self, key, default=None):
+        return self._user_meta.get(key)
+
+
+    def update(self, key_value_dict: Union[Dict[str, bytes], Dict[str, io.IOBase]]):
+        """
+
+        """
+        self._user_meta.update(key_value_dict)
+        self._modified = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def close(self):
+        self.sync()
+
+    def sync(self):
+        """
+
+        """
+        if self._modified:
+            int_us = utils.make_timestamp()
+            self._metadata['last_modified'] = int_us
+            if self._version_date:
+                self._metadata['versions'][self._version_position] = {'versions_date': self._version_date, 'user_metadata': self._user_meta}
+            else:
+                self._metadata['user_metadata'] = self._user_meta
+
+            with io.open(self._local_meta_path, 'wb') as f:
+                f.write(zstd.compress(orjson.dumps(self._metadata, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SERIALIZE_NUMPY)))
+
+
+class Session:
+    """
+
+    """
+    def __init__(self,
+                 local_db_path: Union[str, pathlib.Path],
+                 remote_url: HttpUrl=None,
+                 flag: str = "r",
+                 remote_db_key: str=None,
+                 bucket: str=None,
+                 connection_config: Union[s3func.utils.S3ConnectionConfig, s3func.utils.B2ConnectionConfig]=None,
+                 value_serializer: str = None,
+                 buffer_size: int=2**22,
+                 read_timeout: int=120,
+                 threads: int=20,
+                 lock_timeout=-1,
+                 break_other_locks=False,
+                 **local_storage_kwargs,
+                 ):
+        """
+
+        """
         if flag == "r":  # Open existing database for reading only (default)
             write = False
         elif flag == "w":  # Open existing database for reading and writing
@@ -91,46 +215,150 @@ class S3dbm(MutableMapping):
         ## Check the remote config
         http_session, s3_session, remote_s3_access, remote_http_access, host_url, remote_base_url = utils.init_remote_config(flag, bucket, connection_config, remote_url, threads, read_timeout)
 
-        ## Init metadata
-        meta, meta_in_remote = utils.init_metadata(local_meta_path, remote_keys_path, http_session, s3_session, remote_s3_access, remote_http_access, remote_url, remote_db_key, value_serializer, local_storage_kwargs)
-        s3dbm_meta = meta['s3dbm']
-
-        ## Init local_storage_kwargs
-        local_data = utils.init_local_storage(local_meta_path, flag, s3dbm_meta)
-
-        ## Open remote keys file
-        if meta_in_remote:
-            remote_keys = booklet.FixedValue(remote_keys_path)
+        ## Create S3 lock for writes
+        # TODO : Should I create shared locks for readers that have remote_s3_access?
+        if flag != 'r':
+            lock = s3func.s3.S3Lock(connection_config, bucket, remote_db_key, read_timeout=read_timeout)
+            if break_other_locks:
+                lock.break_other_locks()
+            lock.aquire(timeout=lock_timeout)
         else:
-            remote_keys = None
+            lock = None
+
+        ## Init metadata
+        meta, meta_in_remote, version_date = utils.init_metadata(local_meta_path, remote_keys_path, http_session, s3_session, remote_s3_access, remote_http_access, remote_url, remote_db_key, value_serializer, local_storage_kwargs)
+
+        ## Init local storage
+        local_data_path = utils.init_local_storage(local_meta_path, flag, meta)
 
         ## Assign properties
+        self._meta_in_remote = meta_in_remote
+        self._version_date = version_date
+        self._remote_db_key = remote_db_key
+        self._flag = flag
+        self._n_buckets = n_buckets
         self._write = write
         self._buffer_size = buffer_size
-        self._s3_session = s3_session
-        self._http_session = http_session
+        self._connection_config = connection_config
+        self._read_timeout = read_timeout
+        self._lock = lock
         self._remote_s3_access = remote_s3_access
         self._remote_http_access = remote_http_access
         self._bucket = bucket
         self._meta = meta
         self._threads = threads
         self._local_meta_path = local_meta_path
+        self._remote_keys_path = remote_keys_path
+        self._local_data_path = local_data_path
+        self._value_serializer_code = value_serializer_code
+        self._local_storage_kwargs = local_storage_kwargs
+
+        ## Assign the metadata object for global
+        self.metadata = UserMetadata(local_meta_path, meta)
+
+
+    def open(self):
+        """
+
+        """
+        s3dbm = S3dbm(self)
+
+        return s3dbm
+
+
+    def close(self):
+        """
+
+        """
+        ## Remove lock
+        if self._flag != 'r':
+            self.metadata.close()
+            # TODO - Update remote here!
+            self._lock.release()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
+class S3dbm(MutableMapping):
+    """
+
+    """
+    def __init__(
+            self,
+            # local_db_path: Union[str, pathlib.Path],
+            # remote_url: HttpUrl=None,
+            # flag: str = "r",
+            # remote_db_key: str=None,
+            # bucket: str=None,
+            # connection_config: Union[s3func.utils.S3ConnectionConfig, s3func.utils.B2ConnectionConfig]=None,
+            # value_serializer: str = None,
+            # buffer_size: int=524288,
+            # read_timeout: int=60,
+            # threads: int=20,
+            # **local_storage_kwargs,
+            session: Session
+            ):
+        """
+
+        """
+        ## Open local data
+        local_data = booklet.VariableValue(session._local_data_path, flag='w')
+
+        ## Open remote keys file
+        if session._meta_in_remote:
+            remote_keys = booklet.FixedValue(session._remote_keys_path)
+        else:
+            remote_keys = None
+
+        ## Init the remote sessions
+        if session._remote_http_access:
+            http_session = s3func.HttpSession(session._threads, read_timeout=session._read_timeout, stream=False)
+        else:
+            http_session = None
+        if session._remote_s3_access:
+            s3_session = s3func.S3Session(session._connection_config, session._bucket, session._threads, read_timeout=session._read_timeout, stream=False)
+        else:
+            s3_session = None
+
+        ## Assign properties
+        # self._n_buckets = session._n_buckets
+        self._changelog = None
+        # self._write = session._write
+        # self._buffer_size = session._buffer_size
+        self._s3_session = s3_session
+        self._http_session = http_session
+        # self._remote_s3_access = session._remote_s3_access
+        # self._remote_http_access = session._remote_http_access
+        # self._bucket = bucket
+        # self._meta = meta
+        self._session = session
+        # self._threads = session._threads
+        # self._local_meta_path = session._local_meta_path
+        # self._local_data_path = session._local_data_path
+        # self._remote_keys_path = session._remote_keys_path
         self._local_data = local_data
         self._remote_keys = remote_keys
-        self._remote_keys_path = remote_keys_path
         self._deletes = list()
-        self._value_serializer = booklet.serializers.serial_int_dict[value_serializer_code]
+        self._value_serializer = booklet.serializers.serial_int_dict[session._value_serializer_code]
+        # self._value_serializer = session._value_serializer
 
         # self._manager = multiprocessing.Manager()
         # self._lock = self._manager.Lock()
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=threads)
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=session._threads)
+
+        ## Assign the metadata object for the version
+        self.metadata = UserMetadata(session._local_meta_path, session._meta, session._version_date)
 
 
     def _pre_value(self, value) -> bytes:
 
         ## Serialize to bytes
         try:
-            value = self._value_serializer.dumps(value)
+            value = self._session._value_serializer.dumps(value)
         except Exception as exc:
             raise utils.SerializeError(exc, self)
 
@@ -139,7 +367,7 @@ class S3dbm(MutableMapping):
     def _post_value(self, value: bytes):
 
         ## Serialize from bytes
-        value = self._value_serializer.loads(value)
+        value = self._session._value_serializer.loads(value)
 
         return value
 

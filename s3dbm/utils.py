@@ -15,10 +15,11 @@ import hashlib
 import booklet
 import orjson
 import portalocker
-from s3func import S3Session, HttpSession
+from s3func import S3Session, HttpSession, s3
 import urllib3
 import shutil
 from datetime import datetime, timezone
+import zstandard as zstd
 # from collections.abc import Mapping, MutableMapping
 # from __init__ import __version__ as version
 
@@ -145,7 +146,7 @@ def init_metadata(local_meta_path, remote_keys_path, http_session, s3_session, r
 
     if local_meta_path.exists():
         with io.open(local_meta_path, 'rb') as f:
-            meta = orjson.loads(f.read())
+            meta = orjson.loads(zstd.decompress(f.read()))
     else:
         meta = None
 
@@ -161,7 +162,7 @@ def init_metadata(local_meta_path, remote_keys_path, http_session, s3_session, r
         if meta0.status == 200:
             if meta0.metadata['file_type'] != 's3dbm':
                 raise TypeError('The remote file is not an s3dbm file.')
-            remote_meta = orjson.loads(meta0.data)
+            remote_meta = orjson.loads(zstd.decompress(meta0.data))
             meta_in_remote = True
 
             ## Determine if the remote keys file needs to be downloaded
@@ -170,8 +171,8 @@ def init_metadata(local_meta_path, remote_keys_path, http_session, s3_session, r
                     f.write(meta0.data)
                 meta = remote_meta
             else:
-                remote_ts = remote_meta['s3dbm']['last_modified']
-                local_ts = meta['s3dbm']['last_modified']
+                remote_ts = remote_meta['last_modified']
+                local_ts = meta['last_modified']
                 if remote_ts > local_ts:
                     get_remote_keys_file(local_meta_path, remote_db_key, remote_url, http_session, s3_session, remote_http_access)
 
@@ -184,22 +185,28 @@ def init_metadata(local_meta_path, remote_keys_path, http_session, s3_session, r
 
     if meta is None:
         int_us = make_timestamp()
+        version_date = datetime.fromtimestamp(int(int_us*0.000001)).strftime('%Y%m%dT%H%M%SZ')
         meta = {
-            's3dbm': {
-                'version': version,
-                'local_data_kwargs': local_storage_kwargs,
-                'value_serializer': value_serializer,
-                'last_modified': int_us,
-                # 'remote_keys_hash': ''
-                }
+            'package_version': version,
+            'local_data_kwargs': local_storage_kwargs,
+            'value_serializer': value_serializer,
+            'last_modified': int_us,
+            'user_metadata': {},
+            'versions': [
+                {'version_date': version_date,
+                 'user_metadata': {}
+                 }
+                ]
             }
         with io.open(local_meta_path, 'wb') as f:
-            f.write(orjson.dumps(meta, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SERIALIZE_NUMPY))
+            f.write(zstd.compress(orjson.dumps(meta, option=orjson.OPT_NON_STR_KEYS | orjson.OPT_SERIALIZE_NUMPY)))
+    else:
+        version_date = meta['versions'][-1]['version_date']
 
-    return meta, meta_in_remote
+    return meta, meta_in_remote, version_date
 
 
-def init_local_storage(local_meta_path, flag, s3dbm_meta):
+def init_local_storage(local_meta_path, flag, meta):
     """
 
     """
@@ -207,18 +214,19 @@ def init_local_storage(local_meta_path, flag, s3dbm_meta):
     local_data_path = local_meta_path.parent.joinpath(local_data_file_name)
 
     if local_data_path.exists():
-
         if flag == 'n':
             ## Overwrite local data file
-            f = booklet.open(local_data_path, flag=flag, **s3dbm_meta['local_data_kwargs'])
-        else:
-            ## Open existing file
-            f = booklet.open(local_data_path, flag=flag)
+            with booklet.open(local_data_path, flag=flag, **meta['local_data_kwargs']) as f:
+                pass
+        # else:
+        #     ## Open existing file
+        #     f = booklet.open(local_data_path, flag=flag)
     else:
         ## Create local data file
-        f = booklet.open(local_data_path, flag=flag, **s3dbm_meta['local_data_kwargs'])
+        with booklet.open(local_data_path, flag=flag, **meta['local_data_kwargs']) as f:
+            pass
 
-    return f
+    return local_data_path
 
 
 def get_remote_keys_file(remote_keys_path, remote_db_key, remote_url, http_session, s3_session, remote_http_access):
@@ -333,60 +341,59 @@ def get_value(local_data, remote_keys, key, bucket=None, s3_client=None, session
 
 
 #################################################
-### S3 interactions
+### local/remote changelog
 
 
-def create_changelog_file(local_data, remote_keys, local_meta_path):
+def create_changelog(local_data_path, remote_keys_path, local_meta_path, n_buckets, meta_in_remote):
     """
     Only check and save by the microsecond timestamp. Might need to add in the md5 hash if this is not sufficient.
     """
     changelog_path = local_meta_path.parent.joinpath(local_meta_path.name + '.changelog')
-    f = booklet.FixedValue(changelog_path, 'n', key_serializer='str', value_len=14)
-    if remote_keys:
-        # shutil.copyfile(remote_keys_path, temp_remote_keys_path)
-        # f = booklet.FixedValue(temp_remote_keys_path, 'w')
-        for key, local_val in local_data.items():
-            local_bytes_us = local_val[:7]
-            remote_val = remote_keys.get(key)
-            if remote_val:
-                local_int_us = bytes_to_int(local_bytes_us)
-                remote_bytes_us = remote_val[:7]
-                remote_int_us = bytes_to_int(remote_bytes_us)
-                if local_int_us > remote_int_us:
-                    f[key] = local_bytes_us + remote_bytes_us
+    with booklet.FixedValue(changelog_path, 'n', key_serializer='str', value_len=14, n_buckets=n_buckets) as f:
+        with booklet.VariableValue(local_data_path) as local_data:
+            if meta_in_remote:
+                # shutil.copyfile(remote_keys_path, temp_remote_keys_path)
+                # f = booklet.FixedValue(temp_remote_keys_path, 'w')
+                with booklet.VariableValue(remote_keys_path) as remote_keys:
+                    for key, local_val in local_data.items():
+                        local_bytes_us = local_val[:7]
+                        remote_val = remote_keys.get(key)
+                        if remote_val:
+                            local_int_us = bytes_to_int(local_bytes_us)
+                            remote_bytes_us = remote_val[:7]
+                            remote_int_us = bytes_to_int(remote_bytes_us)
+                            if local_int_us > remote_int_us:
+                                f[key] = local_bytes_us + remote_bytes_us
+                        else:
+                            f[key] = local_bytes_us + int_to_bytes(0, 7)
             else:
-                f[key] = local_bytes_us + int_to_bytes(0, 7)
-    else:
-        # f = booklet.FixedValue(temp_remote_keys_path, 'n', key_serializer='str', value_len=26)
-        for key, local_val in local_data.items():
-            local_bytes_us = local_val[:7]
-            f[key] = local_bytes_us + int_to_bytes(0, 7)
+                # f = booklet.FixedValue(temp_remote_keys_path, 'n', key_serializer='str', value_len=26)
+                for key, local_val in local_data.items():
+                    local_bytes_us = local_val[:7]
+                    f[key] = local_bytes_us + int_to_bytes(0, 7)
 
-    f.sync()
-
-    return f
+    return changelog_path
 
 
-def changelog(local_data, remote_keys, local_meta_path):
+def view_changelog(changelog_path):
     """
 
     """
-    f = create_changelog_file(local_data, remote_keys, local_meta_path)
-
-    for key, val in f.items():
-        local_bytes_us = val[:7]
-        remote_bytes_us = val[7:]
-        local_int_us = bytes_to_int(local_bytes_us)
-        remote_int_us = bytes_to_int(remote_bytes_us)
-        if remote_int_us == 0:
-            remote_ts = None
-        else:
-            remote_ts = datetime.fromtimestamp(remote_int_us*0.000001)
-        dict1 = {
-            'key': key,
-            'remote_timestamp': remote_ts,
-            'local_timestamp': datetime.fromtimestamp(local_int_us*0.000001)}
-        yield dict1
+    with booklet.FixedValue(changelog_path) as f:
+        for key, val in f.items():
+            local_bytes_us = val[:7]
+            remote_bytes_us = val[7:]
+            local_int_us = bytes_to_int(local_bytes_us)
+            remote_int_us = bytes_to_int(remote_bytes_us)
+            if remote_int_us == 0:
+                remote_ts = None
+            else:
+                remote_ts = datetime.fromtimestamp(remote_int_us*0.000001)
+            dict1 = {
+                'key': key,
+                'remote_timestamp': remote_ts,
+                'local_timestamp': datetime.fromtimestamp(local_int_us*0.000001)}
+            yield dict1
 
 
 
